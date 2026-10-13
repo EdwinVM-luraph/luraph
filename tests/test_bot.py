@@ -140,6 +140,23 @@ class BotCommandTests(unittest.IsolatedAsyncioTestCase):
         await self.invoke(self.context())
         self.assertEqual(len(self.uploads), 1)
 
+    async def test_startup_failure_is_retried_after_engine_is_installed(self):
+        self.bot.engine_errors['luraph'] = 'No encuentro Luraph'
+        self.bot.luraph_engine.ensure_ready = AsyncMock()
+        await self.invoke(self.context())
+        self.bot.luraph_engine.ensure_ready.assert_awaited_once()
+        self.assertNotIn('luraph', self.bot.engine_errors)
+        self.assertEqual(len(self.uploads), 1)
+
+    async def test_no_engines_at_startup_still_allows_first_use_preparation(self):
+        self.bot.engine.prepare = AsyncMock(side_effect=application.ProcessingError('missing'))
+        self.bot.luraph_engine.prepare = AsyncMock(side_effect=application.ProcessingError('missing'))
+        await self.bot.setup_hook()
+        self.assertEqual(set(self.bot.engine_errors), {'deobf', 'luraph'})
+        self.bot.luraph_engine.ensure_ready = AsyncMock()
+        await self.invoke(self.context())
+        self.assertEqual(len(self.uploads), 1)
+
     @unittest.skipUnless(NATIVE_READY, 'build Luau runtime first')
     async def test_real_engine_attachment_returns_executable_lua(self):
         self.bot.luraph_engine = application.LuraphDeobfuscator(ROOT)
@@ -220,6 +237,30 @@ Path(str(out)+'.json').write_text(json.dumps(report))
                     await engine.run(source)
                 await engine.close()
 
+    async def test_first_use_runs_preparation_without_discord_credentials(self):
+        engine = application.LuraphDeobfuscator(ROOT)
+        engine.prepare = AsyncMock(side_effect=[application.ProcessingError('missing runtime'), None])
+        process = SimpleNamespace(pid=123, returncode=0, wait=AsyncMock(return_value=0))
+        with patch.object(application.asyncio, 'create_subprocess_exec', AsyncMock(return_value=process)) as spawn, \
+                patch.object(application.os, 'killpg'):
+            await engine.ensure_ready()
+        command = spawn.call_args.args
+        self.assertIn(str(ROOT / 'prepare_engine.py'), command)
+        self.assertIn('--skip-prometheus', command)
+        self.assertIn('--skip-dependencies', command)
+        self.assertEqual(spawn.call_args.kwargs['env']['LURAPH_RECOVER_DIR'], str(ROOT))
+        self.assertNotIn('DISCORD_TOKEN', spawn.call_args.kwargs['env'])
+        self.assertEqual(engine.prepare.await_count, 2)
+        await engine.close()
+
+    async def test_prepare_rechecks_path_after_bot_was_created(self):
+        engine = application.LuraphDeobfuscator()
+        engine.repo = ROOT / 'missing-at-startup'
+        with patch.object(application, 'find_luraph_directory', return_value=ROOT):
+            await engine.prepare()
+        self.assertEqual(engine.repo, ROOT)
+        await engine.close()
+
     async def test_shutdown_rejects_new_work(self):
         engine = application.LuraphDeobfuscator(ROOT)
         await engine.close()
@@ -251,6 +292,39 @@ class PreparationTests(unittest.TestCase):
         self.assertEqual(run.call_count, 2)
         self.assertIn('pip', run.call_args_list[0].args[0])
         self.assertIn(str(ROOT / 'scripts' / 'build_runtime.py'), run.call_args_list[1].args[0])
+
+    def test_resolvers_find_engine_in_working_directory_and_match_relative_setting(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            engine = root / 'work' / 'luraph-fusion'
+            (engine / 'luraph').mkdir(parents=True)
+            (engine / 'luraph' / 'cli.py').touch()
+            standalone = root / 'scripts' / 'bot.py'
+            with patch.object(application, '__file__', str(standalone)), \
+                    patch.object(prepare_engine, '__file__', str(standalone.with_name('prepare_engine.py'))), \
+                    patch.object(Path, 'cwd', return_value=root / 'work'), \
+                    patch.dict(os.environ, {'LURAPH_RECOVER_DIR': ''}):
+                self.assertEqual(application.find_luraph_directory(), engine)
+                self.assertEqual(prepare_engine.luraph_directory(), engine)
+                with patch.dict(os.environ, {'LURAPH_RECOVER_DIR': '../chosen'}):
+                    expected = (root / 'chosen').resolve()
+                    self.assertEqual(application.find_luraph_directory(), expected)
+                    self.assertEqual(prepare_engine.luraph_directory(), expected)
+
+    def test_bot_bootstrap_can_build_without_reinstalling_loaded_dependencies(self):
+        with patch.object(prepare_engine, 'luraph_directory', return_value=ROOT), \
+                patch.object(prepare_engine.subprocess, 'run') as run:
+            prepare_engine.main(['--skip-prometheus', '--skip-dependencies'])
+        self.assertEqual(run.call_count, 1)
+        self.assertIn(str(ROOT / 'scripts' / 'build_runtime.py'), run.call_args.args[0])
+
+    def test_empty_destination_is_accepted_for_download(self):
+        with tempfile.TemporaryDirectory() as folder:
+            destination = Path(folder)
+            with patch.object(prepare_engine, 'luraph_directory', return_value=destination), \
+                    patch.object(prepare_engine.subprocess, 'run') as run:
+                prepare_engine.main(['--skip-prometheus'])
+            self.assertIn('clone', run.call_args_list[0].args[0])
 
     def test_standalone_preparation_downloads_pinned_engine(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -114,6 +114,13 @@ herramientas de instalación indicadas arriba. Si guardas `bot.py` y
 `prepare_engine.py` fuera del checkout, descarga una revisión fija del motor en
 `luraph-fusion/`. `LURAPH_RECOVER_DIR` permite usar otro checkout instalado.
 El token se lee del entorno y no se entrega a los procesos de recuperación.
+Si el motor falta al arrancar, el bot puede conectarse y el primer `.luraph`
+ejecuta automáticamente `prepare_engine.py --skip-prometheus`. Guarda ambos
+archivos juntos; la primera compilación puede tardar varios minutos y necesita
+Git, CMake y un compilador C++17. Se vuelve a comprobar la instalación en cada
+comando, así que prepararlo después del arranque no deja un error permanente.
+El bot y la preparación buscan también un checkout en el directorio de trabajo.
+Una ruta relativa de `LURAPH_RECOVER_DIR` se interpreta desde la carpeta del script.
 
 En Discord, envía `.luraph` con un adjunto `.lua`, `.luau` o `.txt`, o utiliza
 `.luraph https://ejemplo.com/archivo.lua` con una URL directa. Recibirás
