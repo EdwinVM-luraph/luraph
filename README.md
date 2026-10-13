@@ -94,3 +94,41 @@ sobre una VM sintética cuyo comportamiento se compara con el resultado.
 La integración de KryptIT se comprueba mediante un doble de su CLI, sin afirmar
 cobertura real de todas sus versiones. Los archivos de entrada se ejecutan en
 un entorno Luau emulado; la emulación no es una barrera de aislamiento del sistema.
+
+
+## Bot de Discord: `.luraph`
+
+`bot.py` incorpora el comando `.luraph` del bot adjunto. Solo el usuario de
+`DISCORD_OWNER_ID` puede ejecutarlo. Activa **Message Content Intent** en el
+Developer Portal de Discord y permite al bot enviar mensajes y adjuntar archivos.
+
+```bash
+python prepare_engine.py --jobs 2
+export DISCORD_TOKEN="tu_token"
+export DISCORD_OWNER_ID="tu_id_de_usuario"
+python bot.py
+```
+
+La preparación instala `requirements-bot.txt` y construye Luau. Necesita las
+herramientas de instalación indicadas arriba. Si guardas `bot.py` y
+`prepare_engine.py` fuera del checkout, descarga una revisión fija del motor en
+`luraph-fusion/`. `LURAPH_RECOVER_DIR` permite usar otro checkout instalado.
+El token se lee del entorno y no se entrega a los procesos de recuperación.
+
+En Discord, envía `.luraph` con un adjunto `.lua`, `.luau` o `.txt`, o utiliza
+`.luraph https://ejemplo.com/archivo.lua` con una URL directa. Recibirás
+`resultado.lua`. Si el archivo no tiene cabecera, añade la versión:
+`.luraph 14.8` con el adjunto, o `.luraph https://ejemplo.com/archivo.lua 14.8`.
+Se aceptan recuperaciones parciales con un aviso en el mensaje y en el archivo;
+las trazas de comportamiento no se devuelven como desvirtualización.
+
+El bot limita la entrada a 2 MiB, comprueba el límite de subida de Discord y
+procesa un archivo a la vez. El motor dispone de 240 segundos por ejecución y
+el bot cancela el trabajo a los 300 segundos. Cada trabajo usa un directorio
+temporal y la caché de `.luraph` está separada de `.deobf`.
+
+`.deobf` y `.get` conservan su uso anterior. `.deobf` requiere una instalación
+independiente de Prometheus, Node 22+ y Lua 5.1, configurable con
+`DEOBF_RECOVER_DIR`. Su ausencia no impide usar `.luraph`. La preparación
+conserva los parches del script adjunto cuando encuentra Prometheus; usa
+`--skip-prometheus` para preparar únicamente Luraph.
