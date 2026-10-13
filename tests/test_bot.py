@@ -65,6 +65,17 @@ class BotCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.uploads[0][1].startswith(application.PARTIAL_HEADER))
         self.assertIn('recuperación parcial', self.messages[-1])
 
+    async def test_cache_hit_does_not_prepare_missing_engine(self):
+        ctx = self.context()
+        self.bot.luraph_engine.ensure_ready = AsyncMock()
+        await self.invoke(ctx)
+        self.bot.luraph_engine.ensure_ready.reset_mock()
+        self.bot.luraph_engine.ensure_ready.side_effect = application.ProcessingError('engine unavailable')
+        self.bot.engine_errors['luraph'] = 'engine unavailable'
+        await self.invoke(ctx)
+        self.bot.luraph_engine.ensure_ready.assert_not_awaited()
+        self.assertEqual(self.uploads, [('resultado.lua', b'print(42)\n')] * 2)
+
     async def test_version_is_forwarded_and_has_distinct_cache_entry(self):
         ctx = self.context()
         await self.invoke(ctx, '14.8')

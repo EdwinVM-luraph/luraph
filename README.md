@@ -139,3 +139,7 @@ independiente de Prometheus, Node 22+ y Lua 5.1, configurable con
 `DEOBF_RECOVER_DIR`. Su ausencia no impide usar `.luraph`. La preparación
 conserva los parches del script adjunto cuando encuentra Prometheus; usa
 `--skip-prometheus` para preparar únicamente Luraph.
+
+### Rendimiento
+
+El motor inicia la sesión para decodificar constantes solo cuando encuentra una constante pendiente; los archivos que ya contienen todo lo necesario evitan ejecutar otra vez su bootstrap. Los resultados del bot en caché se entregan sin preparar de nuevo el motor. En tres mediciones alternadas con el ejemplo MIT `5ae248d6527b5c01.lua`, la mediana del motor bajó de 3,177 s a 1,971 s (38 %), con el mismo resultado Lua. El tiempo depende del archivo y del servidor; los límites de recuperación y las comprobaciones del resultado se conservan.

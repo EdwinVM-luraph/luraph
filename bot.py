@@ -495,11 +495,6 @@ def create_bot(owner_id):
             started = time.perf_counter()
             progress = asyncio.create_task(delayed_progress(ctx))
             try:
-                if command == "luraph":
-                    if command in bot.engine_errors:
-                        await ctx.send("Preparando el motor Luraph… La primera compilación puede tardar varios minutos.")
-                    await engine.ensure_ready()
-                    bot.engine_errors.pop("luraph", None)
                 if url:
                     timeout = aiohttp.ClientTimeout(total=25, connect=8, sock_read=15)
                     async with aiohttp.ClientSession(timeout=timeout, trust_env=False) as session:
@@ -527,6 +522,11 @@ def create_bot(owner_id):
                     # Cache hit: avoid creating a temp directory and writing the result to disk.
                     result_data = cached
                 else:
+                    if command == "luraph":
+                        if command in bot.engine_errors:
+                            await ctx.send("Preparando el motor Luraph… La primera compilación puede tardar varios minutos.")
+                        await engine.ensure_ready()
+                        bot.engine_errors.pop("luraph", None)
                     with tempfile.TemporaryDirectory(prefix="deobf-") as folder:
                         source = Path(folder) / "entrada.lua"
                         source.write_bytes(input_data)
