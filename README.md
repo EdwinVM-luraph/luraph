@@ -149,3 +149,16 @@ El motor inicia la sesión para decodificar constantes solo cuando encuentra una
 Configura `LURAPH_CACHE_DIR` para guardar hasta 128 MiB de resultados verificados (máximo 256 entradas) en SQLite. La caché no guarda los archivos de entrada. Verifica tamaño y SHA256 al leer y separa los resultados cuando cambia el código del bot, el motor o sus binarios. Los errores de disco permiten continuar con una recuperación normal. La lectura/escritura de disco ocurre fuera del bucle de Discord. Los resultados en caché pueden entregarse mientras otro archivo se desvirtualiza.
 
 Para conservar la caché entre reconstrucciones del contenedor, monta un volumen del hosting en `/data` y establece `LURAPH_CACHE_DIR=/data/luraph-cache`. Sin volumen, la caché depende del disco efímero del contenedor. En una prueba local con recuperación real y la red Discord simulada, el primer archivo tardó 2,08 s y cinco entregas desde disco con instancias nuevas del bot tuvieron mediana 1,86 ms. Esto acelera archivos repetidos; no convierte archivos nuevos en recuperaciones instantáneas. Las rondas de runtime también usan notificaciones de salida/fin en lugar de esperas fijas de 100 ms, manteniendo los límites de silencio y tiempo total.
+
+### Closures de Lua preservadas
+
+Las funciones que Luraph conserva como código Lua se reconstruyen con sus
+variables capturadas, incluidas las cajas que comparten lecturas y escrituras
+con el padre. Se admiten fuentes de varias líneas y cuerpos largos. Una
+closure que no puede reconstruirse emite un marcador `devirt:` y se clasifica
+como parcial; no se sustituye silenciosamente por una función vacía.
+
+La regresión `tests/fixtures/vm-plain-closure.lua` comprueba el pipeline v15
+y compara el comportamiento original y recuperado (23, 42, 42). Las pruebas
+de closures verifican también callbacks anidados, cajas independientes,
+upvalues, bytes de cadenas y cuerpos de más de 2000 bytes.

@@ -423,10 +423,27 @@ class PlainProto:
         else:
             text = "\n".join([lines[l1][c1:]] + lines[l1 + 1:l2] + [lines[l2][:c2]])
 
-        for start, end, kind, data in sorted(self.replacements, key=lambda x: x[0], reverse=True):
+        replacements = list(self.replacements)
+        # The AST source is Latin-1 so byte columns remain exact. Emit
+        # non-ASCII string values through the byte-aware Lua renderer;
+        # writing their raw Latin-1 spelling as UTF-8 would change bytes.
+        starts = [0]
+        for line in lines:
+            starts.append(starts[-1] + len(line) + 1)
+        base = starts[l1] + c1
+        for n in iter_nodes(self.node):
+            if n.get("type") == "AstExprConstantString" and any(ord(c) >= 128 for c in n["value"]):
+                from codegen import quote
+                a, b, c, d = vmmap.loc(n)
+                replacements.append((starts[a] + b - base, starts[c] + d - base,
+                                     "text", quote(n["value"].encode("latin-1"))))
+
+        for start, end, kind, data in sorted(replacements, key=lambda x: x[0], reverse=True):
             if kind == "reg":
                 rep = capnames.get(data, "r%d" % data)
-            elif kind in ("global", "builtin"):
+            elif kind == "up":
+                rep = upnames[data]
+            elif kind in ("global", "builtin", "text"):
                 rep = data
             else:
                 continue
@@ -1268,7 +1285,7 @@ class ProtoLifter:
                 clo = self.plain_closure(LuaFunc(v.node, Scope()))
                 if clo is not None:
                     return clo
-                return Opaque("function", self.plain_function_text(v.node) or "function(...) end")
+                return Opaque("function", self.plain_function_text(v.node) or 'function(...) error("devirt: unresolved plain closure") end')
             n = self.dump.shared.setdefault(v.lfid, len(self.dump.shared) + 1)
             return SharedFn(v, n)
         if isinstance(v, Buf):
@@ -1286,7 +1303,7 @@ class ProtoLifter:
             text = self.plain_function_text(v)
             if text is not None:
                 return Opaque("function", text)
-            return Opaque("function", "function(...) end")
+            return Opaque("function", 'function(...) error("devirt: unresolved plain closure") end')
         raise Unsupported("value %r in an expression" % (v,))
 
     def plain_closure(self, fn):
@@ -1310,58 +1327,94 @@ class ProtoLifter:
                         if isinstance(item, dict):
                             parent_map[id(item)] = (n, k)
 
-        m = re.fullmatch(r"(\d+),(\d+) - (\d+),(\d+)", node["location"])
-        if not m:
-            return None
-        l1, c1, l2, c2 = (int(x) for x in m.groups())
+        # Source locations are byte columns in the Latin-1 input. Compute
+        # offsets across lines before replacing captures, including nested
+        # boxed reads such as captures[1][5][captures[1][4]].
+        starts = [0]
+        for line in lines:
+            starts.append(starts[-1] + len(line) + 1)
+
+        def span(n):
+            l1, c1, l2, c2 = vmmap.loc(n)
+            return starts[l1] + c1, starts[l2] + c2
+
+        base, _ = span(node)
+        missing = object()
+
+        class BoxRead:
+            def __init__(self, box):
+                self.box = box
+
+        def resolve(n):
+            t = n.get("type")
+            if t == "AstExprLocal":
+                return fn.env.get(n["local"]["location"], missing)
+            if t == "AstExprConstantNumber":
+                return S.fix_int(n["value"])
+            if t == "AstExprConstantString":
+                return n["value"].encode("latin-1")
+            if t == "AstExprGroup":
+                return resolve(n["expr"])
+            if t != "AstExprIndexExpr":
+                return missing
+            obj, key = resolve(n["expr"]), resolve(n["index"])
+            if isinstance(obj, LTable) and isinstance(key, (int, bytes)):
+                return obj.h.get(key, missing)
+            if isinstance(obj, RegFile) and type(key) is int:
+                return Reg(key)
+            if isinstance(obj, MaybeBox) and type(key) is int:
+                return (obj, key)
+            if isinstance(obj, tuple) and isinstance(key, tuple) and obj[0] is key[0]:
+                return BoxRead(obj[0])
+            if isinstance(obj, BoxProxy) and type(key) is int:
+                return BoxPart(obj.idx, key)
+            if isinstance(obj, BoxPart) and isinstance(key, BoxPart) and obj.idx == key.idx:
+                return Upval(obj.idx)
+            return missing
 
         replacements = []
         ups = []
         for n in undeclared:
-            loc = n["local"]["location"]
-            sc = fn.env.lookup(loc)
-            val = sc.vars[loc] if sc is not None else None
-            p, _ = parent_map.get(id(n), (None, None))
-            if isinstance(val, LTable) and p and p.get("type") == "AstExprIndexExpr":
-                idx_node = p.get("index", {})
-                if idx_node.get("type") == "AstExprConstantNumber":
-                    k = int(idx_node["value"])
-                    item = val.get(k)
-                    if isinstance(item, Reg):
-                        self.captured_regs.add(item.n)
-                        ups.append(item)
-                        pm = re.fullmatch(r"(\d+),(\d+) - (\d+),(\d+)", p["location"])
-                        if pm:
-                            _, pc1, _, pc2 = (int(x) for x in pm.groups())
-                            replacements.append((pc1 - c1, pc2 - c1, "reg", item.n))
-                            continue
-                    elif isinstance(item, Global):
-                        pm = re.fullmatch(r"(\d+),(\d+) - (\d+),(\d+)", p["location"])
-                        if pm:
-                            _, pc1, _, pc2 = (int(x) for x in pm.groups())
-                            replacements.append((pc1 - c1, pc2 - c1, "global", item.name))
-                            continue
-                    elif isinstance(item, Builtin):
-                        pm = re.fullmatch(r"(\d+),(\d+) - (\d+),(\d+)", p["location"])
-                        if pm:
-                            _, pc1, _, pc2 = (int(x) for x in pm.groups())
-                            replacements.append((pc1 - c1, pc2 - c1, "builtin", item.name))
-                            continue
-            elif isinstance(val, Reg):
-                self.captured_regs.add(val.n)
-                ups.append(val)
-                nm = re.fullmatch(r"(\d+),(\d+) - (\d+),(\d+)", n["location"])
-                if nm:
-                    _, nc1, _, nc2 = (int(x) for x in nm.groups())
-                    replacements.append((nc1 - c1, nc2 - c1, "reg", val.n))
-                    continue
-            elif isinstance(val, Global):
-                nm = re.fullmatch(r"(\d+),(\d+) - (\d+),(\d+)", n["location"])
-                if nm:
-                    _, nc1, _, nc2 = (int(x) for x in nm.groups())
-                    replacements.append((nc1 - c1, nc2 - c1, "global", val.name))
-                    continue
-            return None
+            current = n
+            while True:
+                value = resolve(current)
+                if isinstance(value, (Reg, BoxRead, Upval, Global, Builtin)):
+                    start, end = span(current)
+                    if isinstance(value, Reg):
+                        kind, data = "reg", value.n
+                    elif isinstance(value, BoxRead):
+                        kind, data = "reg", value.box.reg
+                    elif isinstance(value, Upval):
+                        kind, data = "up", value.idx
+                    else:
+                        kind, data = "global", value.name
+                    replacements.append((start - base, end - base, kind, data))
+                    if isinstance(value, (Reg, BoxRead, Upval)):
+                        ups.append(value.box if isinstance(value, BoxRead) else value)
+                    break
+                parent, field = parent_map.get(id(current), (None, None))
+                if not parent or field != "expr" or parent.get("type") not in ("AstExprIndexExpr", "AstExprGroup"):
+                    break
+                current = parent
+
+        # A box's index expression can contain another capture. It is
+        # covered by the enclosing replacement, rather than rendered alone.
+        replacements = sorted(set(replacements), key=lambda r: (r[0], -r[1]))
+        outer = []
+        for replacement in replacements:
+            if outer and replacement[0] < outer[-1][1]:
+                if replacement[1] > outer[-1][1]:
+                    return None
+                continue
+            outer.append(replacement)
+        for n in undeclared:
+            start, end = span(n)
+            if not any(a <= start - base and end - base <= b for a, b, _, _ in outer):
+                return None
+        replacements = outer
+        # Register captures must survive the close-instruction cleanup.
+        self.captured_regs.update(e.reg if isinstance(e, MaybeBox) else e.n
+                                  for e in ups if isinstance(e, (Reg, MaybeBox)))
 
         proto = PlainProto(fn, node, replacements, lines)
         c = ClosureExpr(proto, ups)
@@ -1388,7 +1441,7 @@ class ProtoLifter:
             text = lines[l1][c1:c2]
         else:
             text = "\n".join([lines[l1][c1:]] + lines[l1 + 1:l2] + [lines[l2][:c2]])
-        return text if len(text) <= 2000 else None
+        return PlainProto(fn, node, [], lines).render({}, {})
 
     def sym_binop(self, op, a, b):
         if isinstance(a, SymList) or isinstance(b, SymList):
@@ -3360,6 +3413,10 @@ class FunctionLifter:
             for i, e in enumerate(c.upvals, 1):
                 if isinstance(e, Reg):
                     upnames[i] = capnames.get(e.n, "r%d" % e.n)
+                elif isinstance(e, MaybeBox):
+                    upnames[i] = capnames.get(e.reg, "r%d" % e.reg)
+                elif isinstance(e, Upval):
+                    upnames[e.idx] = parent_names.get(("up", e.idx), "upv%d" % e.idx)
             text = proto.render(capnames, upnames)
             f = CG.FuncE(text.splitlines())
             f.captures = set(upnames.values())
