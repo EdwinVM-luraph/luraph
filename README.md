@@ -143,3 +143,9 @@ conserva los parches del script adjunto cuando encuentra Prometheus; usa
 ### Rendimiento
 
 El motor inicia la sesión para decodificar constantes solo cuando encuentra una constante pendiente; los archivos que ya contienen todo lo necesario evitan ejecutar otra vez su bootstrap. Los resultados del bot en caché se entregan sin preparar de nuevo el motor. En tres mediciones alternadas con el ejemplo MIT `5ae248d6527b5c01.lua`, la mediana del motor bajó de 3,177 s a 1,971 s (38 %), con el mismo resultado Lua. El tiempo depende del archivo y del servidor; los límites de recuperación y las comprobaciones del resultado se conservan.
+
+#### Caché de disco y respuestas durante otra recuperación
+
+Configura `LURAPH_CACHE_DIR` para guardar hasta 128 MiB de resultados verificados (máximo 256 entradas) en SQLite. La caché no guarda los archivos de entrada. Verifica tamaño y SHA256 al leer y separa los resultados cuando cambia el código del bot, el motor o sus binarios. Los errores de disco permiten continuar con una recuperación normal. La lectura/escritura de disco ocurre fuera del bucle de Discord. Los resultados en caché pueden entregarse mientras otro archivo se desvirtualiza.
+
+Para conservar la caché entre reconstrucciones del contenedor, monta un volumen del hosting en `/data` y establece `LURAPH_CACHE_DIR=/data/luraph-cache`. Sin volumen, la caché depende del disco efímero del contenedor. En una prueba local con recuperación real y la red Discord simulada, el primer archivo tardó 2,08 s y cinco entregas desde disco con instancias nuevas del bot tuvieron mediana 1,86 ms. Esto acelera archivos repetidos; no convierte archivos nuevos en recuperaciones instantáneas. Las rondas de runtime también usan notificaciones de salida/fin en lugar de esperas fijas de 100 ms, manteniendo los límites de silencio y tiempo total.

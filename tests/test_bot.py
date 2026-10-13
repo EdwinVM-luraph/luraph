@@ -76,6 +76,42 @@ class BotCommandTests(unittest.IsolatedAsyncioTestCase):
         self.bot.luraph_engine.ensure_ready.assert_not_awaited()
         self.assertEqual(self.uploads, [('resultado.lua', b'print(42)\n')] * 2)
 
+    async def test_persistent_hit_survives_restart_without_engine_setup(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {'LURAPH_CACHE_DIR': directory}):
+            first = application.create_bot(123)
+            second = None
+            try:
+                first.luraph_engine.ensure_ready = AsyncMock()
+                first.luraph_engine.run = AsyncMock(return_value=b'print(42)\n')
+                await first.get_command('luraph').callback(self.context(), '', '')
+                second = application.create_bot(123)
+                second.luraph_engine.ensure_ready = AsyncMock(side_effect=application.ProcessingError('missing'))
+                second.luraph_engine.run = AsyncMock()
+                await second.get_command('luraph').callback(self.context(), '', '')
+                second.luraph_engine.ensure_ready.assert_not_awaited()
+                second.luraph_engine.run.assert_not_awaited()
+                self.assertEqual(self.uploads, [('resultado.lua', b'print(42)\n')] * 2)
+            finally:
+                await first.close()
+                if second:
+                    await second.close()
+
+    async def test_cached_file_is_delivered_while_another_recovery_is_busy(self):
+        ctx = self.context()
+        await self.invoke(ctx)
+        self.bot.luraph_engine.run.reset_mock()
+        async with application.BUSY:
+            await self.invoke(ctx)
+            await self.invoke(self.context(content=b'uncached source'))
+        self.assertEqual(self.uploads, [('resultado.lua', b'print(42)\n')] * 2)
+        self.bot.luraph_engine.run.assert_not_awaited()
+        self.assertIn('otro archivo', self.messages[-1])
+
+    async def test_unreadable_cache_identity_does_not_prevent_bot_start(self):
+        with patch.dict(os.environ, {'LURAPH_CACHE_DIR': '/unused'}), patch.object(application, 'engine_namespace', side_effect=OSError):
+            instance = application.create_bot(123)
+            await instance.close()
+
     async def test_version_is_forwarded_and_has_distinct_cache_entry(self):
         ctx = self.context()
         await self.invoke(ctx, '14.8')

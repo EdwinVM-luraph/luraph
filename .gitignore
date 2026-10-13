@@ -8,3 +8,7 @@ output/
 *.egg-info/
 dist/
 build/
+
+cache/
+*.sqlite3
+*.sqlite3-journal
