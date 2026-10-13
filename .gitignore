@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.venv/
+.build/
+vendor/caomod2077/bin/*
+!vendor/caomod2077/bin/.gitkeep
+output/
+*.egg-info/
+dist/
+build/
