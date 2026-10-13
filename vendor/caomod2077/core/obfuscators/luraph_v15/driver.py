@@ -290,49 +290,51 @@ def run(job):
 
 def lift(job, runner, patched, cfg, chunks, run_text, ppath, dpath, chunk_paths, devirt_module=None):
     """devirtualize() with its constant rounds answered by one long-lived
-    harness (started now, so the script runs while round 1 walks); a fresh
+    harness (started only when a missing constant is requested); a fresh
     run per round if it fails or behaves differently."""
     args = job.args
     bridge = runner.bridge
     server = [None]
     synced = [False]    
-    if not bridge and not os.environ.get("DEOB_NO_SERVE"):
+    started = [False]
+
+    def start_server():
+        # Most inputs need no additional constants. Replaying the protected
+        # bootstrap is expensive, so start a session only when it is used.
+        if started[0] or bridge or os.environ.get("DEOB_NO_SERVE"):
+            return
+        started[0] = True
         hs = harness.HarnessServer(runner.luau, patched, cfg, chunks)
         server[0] = hs
         first, err = hs.reply(args.timeout)
-        server.append(True)
         if first is not None and harness.same_trace(harness.trace_text(first), run_text):
             synced[0] = True
         else:
-            if first is None:
-                print("[!] the long-lived harness failed: %s; running the script once per round instead" % err[-300:], file=sys.stderr)
+            reason = "failed: " + err[-300:] if first is None else "traced differently"
+            print("[!] the long-lived harness %s; running the script once per round instead"
+                  % reason, file=sys.stderr)
             hs.close()
-            server[0] = None    
+            server[0] = None
+
+    def fetch(paths, bufs):
+        start_server()
+        if server[0] is None or not synced[0]:
+            # Dump.fetch catches this and falls back to normal constant rounds.
+            raise RuntimeError("no synchronized live harness")
+        return server[0].fetch(paths, bufs, args.timeout)
 
     def live():
-        hs = server[0]
-        if hs is None or not synced[0] or os.environ.get("DEOB_NO_FETCH"):
+        if bridge or os.environ.get("DEOB_NO_SERVE") or os.environ.get("DEOB_NO_FETCH"):
             return None
-        return lambda paths, bufs: hs.fetch(paths, bufs, args.timeout)
+        return fetch
 
     def rerun(c):
         synced[0] = False
         if bridge:
             return runner.run(patched, c, chunks)
+        start_server()
+        synced[0] = False
         hs = server[0]
-        if hs is not None and not server[1]:
-            server[1] = True
-            first, err = hs.reply(args.timeout)
-            if os.environ.get("DEOB_SERVE_DIFF") and first is not None:
-                for nm, tx in (("run", run_text), ("served", harness.trace_text(first))):
-                    with open(job.path(".serve_%s.txt" % nm), "w", encoding="utf-8") as f:
-                        f.write(tx)
-            if first is None or not harness.same_trace(harness.trace_text(first), run_text):
-                print("[!] the long-lived harness %s; running the script once per round instead"
-                      % ("failed: " + err[-300:] if first is None else "traced differently"),
-                      file=sys.stderr)
-                hs.close()
-                hs = server[0] = None
         if hs is not None:
             res = hs.request(c, args.timeout)
             if res[0] is not None:
