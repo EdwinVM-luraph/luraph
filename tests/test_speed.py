@@ -103,3 +103,21 @@ class LazyHarnessTests(unittest.TestCase):
         self.run_pipeline(pipeline)
         self.factory_mock.assert_not_called()
         self.runner.run.assert_called_once()
+
+
+class RuntimeWaitTests(unittest.TestCase):
+    def test_complete_output_is_drained_and_process_is_reaped(self):
+        import sys
+        from harness import _communicate
+        command = [sys.executable, '-c', 'import sys;sys.stdout.write("x"*150000);sys.stderr.write("y"*70000)']
+        stdout, stderr = _communicate(command, 5, 5)
+        self.assertEqual(stdout, b'x' * 150000)
+        self.assertEqual(stderr, b'y' * 70000)
+
+    def test_silence_and_total_deadlines_still_terminate_process(self):
+        import subprocess
+        import sys
+        from harness import _communicate
+        for timeout, stall in ((0.1, None), (5, 0.1)):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                _communicate([sys.executable, '-c', 'import time;time.sleep(10)'], timeout, stall)

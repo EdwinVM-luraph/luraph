@@ -173,31 +173,49 @@ def _communicate(cmd, timeout, stall):
     or a TimeoutExpired."""
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     parts = {1: [], 2: []}
-    last = [time.time()]
+    last = [time.monotonic()]
+    changed = threading.Event()
 
     def pump(stream, key):
         while True:
             b = stream.read1(65536) if hasattr(stream, "read1") else stream.read(65536)
             if not b:
+                changed.set()
                 return
             parts[key].append(b)
-            last[0] = time.time()
+            last[0] = time.monotonic()
+            changed.set()
     threads = [threading.Thread(target=pump, args=(proc.stdout, 1), daemon=True),
                threading.Thread(target=pump, args=(proc.stderr, 2), daemon=True)]
     for t in threads:
         t.start()
-    t0 = time.time()
+    # Waiting for process completion wakes immediately; output wakes the
+    # watchdog so it can reset its silence deadline without fixed polling.
+    waiter = threading.Thread(target=lambda: (proc.wait(), changed.set()), daemon=True)
+    waiter.start()
+    t0 = time.monotonic()
     try:
         while proc.poll() is None:
-            now = time.time()
-            if now - t0 > timeout or (stall and now - last[0] > stall):
+            changed.clear()
+            now = time.monotonic()
+            remaining = timeout - (now - t0)
+            if stall:
+                remaining = min(remaining, stall - (now - last[0]))
+            if remaining <= 0:
                 proc.kill()
                 proc.wait()
                 raise subprocess.TimeoutExpired(cmd, now - t0)
-            time.sleep(0.1)
+            # Recheck after clearing the event to avoid losing process exit.
+            if proc.poll() is None:
+                changed.wait(remaining)
     finally:
+        if proc.poll() is None:
+            proc.kill()
+        waiter.join(5)
         for t in threads:
             t.join(5)
+        proc.stdout.close()
+        proc.stderr.close()
     return b"".join(parts[1]), b"".join(parts[2])
 
 def run_once(luau, source, cfg, hpath, timeout, keep, chunks=None):
